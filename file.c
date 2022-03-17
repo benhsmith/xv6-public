@@ -16,10 +16,14 @@ struct {
   struct file file[NFILE];
 } ftable;
 
+struct readcounter readcounter;
+
 void
 fileinit(void)
 {
   initlock(&ftable.lock, "ftable");
+  initlock(&readcounter.lock, "readcounter");
+  readcounter.count = 0;
 }
 
 // Allocate a file structure.

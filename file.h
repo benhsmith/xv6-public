@@ -34,6 +34,11 @@ struct devsw {
 
 extern struct devsw devsw[];
 
-extern int readcount;
+struct readcounter {
+  int count;
+  struct spinlock lock;
+};
+
+extern struct readcounter readcounter;
 
 #define CONSOLE 1
