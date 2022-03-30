@@ -532,3 +532,13 @@ procdump(void)
     cprintf("\n");
   }
 }
+
+int
+settickets(int tickets)
+{
+  struct proc *curproc = myproc();
+
+  curproc->tickets = tickets;
+
+  return 0;
+}
