@@ -6,6 +6,7 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "pstat.h"
 
 struct {
   struct spinlock lock;
@@ -15,10 +16,39 @@ struct {
 static struct proc *initproc;
 
 int nextpid = 1;
+uint total_tickets = 0;
+
 extern void forkret(void);
 extern void trapret(void);
 
 static void wakeup1(void *chan);
+
+static uint seed = 1648973403;
+
+int
+rand ()
+{
+  unsigned int next = seed;
+  int result;
+
+  next *= 1103515245;
+  next += 12345;
+  result = (unsigned int) (next / 65536) % 2048;
+
+  next *= 1103515245;
+  next += 12345;
+  result <<= 10;
+  result ^= (unsigned int) (next / 65536) % 1024;
+
+  next *= 1103515245;
+  next += 12345;
+  result <<= 10;
+  result ^= (unsigned int) (next / 65536) % 1024;
+
+  seed = next;
+
+  return result;
+}
 
 void
 pinit(void)
@@ -111,6 +141,9 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
+  p->ticks = 0;
+  p->tickets = 1;
+  ++total_tickets;
 
   return p;
 }
@@ -209,6 +242,8 @@ fork(void)
   np->cwd = idup(curproc->cwd);
 
   safestrcpy(np->name, curproc->name, sizeof(curproc->name));
+  np->tickets = curproc->tickets;
+  total_tickets += np->tickets - 1;  // 1 ticket was added to count in allocproc
 
   pid = np->pid;
 
@@ -233,6 +268,8 @@ exit(void)
 
   if(curproc == initproc)
     panic("init exiting");
+
+  total_tickets -= curproc->tickets;
 
   // Close all open files.
   for(fd = 0; fd < NOFILE; fd++){
@@ -275,7 +312,7 @@ wait(void)
   struct proc *p;
   int havekids, pid;
   struct proc *curproc = myproc();
-  
+
   acquire(&ptable.lock);
   for(;;){
     // Scan through table looking for exited children.
@@ -325,8 +362,13 @@ scheduler(void)
   struct proc *p;
   struct cpu *c = mycpu();
   c->proc = 0;
-  
+
   for(;;){
+    uint counter = 0;
+    int winner = rand() % total_tickets;
+    (void)winner;
+    (void)counter;
+
     // Enable interrupts on this processor.
     sti();
 
@@ -336,19 +378,25 @@ scheduler(void)
       if(p->state != RUNNABLE)
         continue;
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
+      counter += p->tickets;
+      if (counter > winner)
+      {
+        // Switch to chosen process.  It is the process's job
+        // to release ptable.lock and then reacquire it
+        // before jumping back to us.
+        c->proc = p;
+        switchuvm(p);
+        p->state = RUNNING;
 
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
+        swtch(&(c->scheduler), p->context);
+        switchkvm();
 
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
+        // Process is done running for now.
+        // It should have changed its p->state before coming back.
+        c->proc = 0;
+
+        break;
+      }
     }
     release(&ptable.lock);
 
@@ -516,6 +564,8 @@ procdump(void)
   char *state;
   uint pc[10];
 
+  cprintf("winner: %d, total_tickets: %d\n", rand() % total_tickets, total_tickets);
+
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->state == UNUSED)
       continue;
@@ -538,7 +588,38 @@ settickets(int tickets)
 {
   struct proc *curproc = myproc();
 
+  if (tickets < 1)
+  {
+    return -1;
+  }
+
+  total_tickets = total_tickets - curproc->tickets + tickets;
   curproc->tickets = tickets;
+
+  return 0;
+}
+
+int
+getpinfo(struct pstat *pstat)
+{
+  int i;
+  struct proc *p;
+
+  acquire(&ptable.lock);
+
+  for(p = ptable.proc, i = 0; p < &ptable.proc[NPROC]; p++, i++){
+    if(p->state == UNUSED)
+    {
+      pstat->inuse[i] = 0;
+      continue;
+    }
+    pstat->inuse[i] = 1;
+    pstat->pid[i] = p->pid;
+    pstat->ticks[i] = p->ticks;
+    pstat->tickets[i] = p->tickets;
+  }
+
+  release(&ptable.lock);
 
   return 0;
 }
